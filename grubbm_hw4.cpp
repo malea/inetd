@@ -96,6 +96,7 @@ vector<pair<int,string>> create_listeners(const map<string,vector<string>> &conf
   bindaddr.sin6_family = AF_INET6;
   memcpy(&bindaddr.sin6_addr, &in6addr_any, sizeof(in6addr_any));
 
+  // for each port in config
   for (auto itr = config_entries.begin(); itr != config_entries.end(); itr++) {
     // need port in integer form
     int port = atoi(itr->first.c_str());
@@ -128,7 +129,7 @@ vector<pair<int,string>> create_listeners(const map<string,vector<string>> &conf
 }
 
 /* Helper function that will execute the command on the proper socket */
-void handle_client(int peer_sockfd, const struct sockaddr_in6 *peer_addr, socklen_t peer_addrlen, string command, bool multiple_commands_per_port) {
+void handle_client(int peer_sockfd, const struct sockaddr_in6 *peer_addr, socklen_t peer_addrlen, string command) {
   char host[80];
   char svc[80];
 
@@ -137,12 +138,13 @@ void handle_client(int peer_sockfd, const struct sockaddr_in6 *peer_addr, sockle
   if (ret != 0) {
     fprintf(stderr, "getnameinfo() failed: %s\n", gai_strerror(ret));
   } 
+  // I chose to include these, to verify accepted connections (was useful for debugging)
   else {
     fprintf(stdout, "[process %d] accepted connection from %s:%s\n", getpid(), host, svc);
   }
 
-  // wait ten seconds before executing command
-  sleep(10);
+  // wait 2 seconds before executing command
+  sleep(2);
 
   // redirect STDIN and STDOUT to socket
   dup2(peer_sockfd, STDIN_FILENO);
@@ -150,9 +152,6 @@ void handle_client(int peer_sockfd, const struct sockaddr_in6 *peer_addr, sockle
 
   // execute command with system shell
   execl("/bin/sh", "/bin/sh", "-c", command.c_str(), NULL);
-
-  // if just one command issued for this port, close socket 
-  close(peer_sockfd);
 }
 
 /* Helper function that will accept the connection, fork a child, then call the helper to
@@ -171,19 +170,18 @@ void do_accept(int sockfd, string port, map<string,vector<string>> &config_entri
     return;
   }
 
+  // look up all commands for a particular port (stored in a reference)
   vector<string> &commands = config_entries[port];
+
+  //for each command fork a child process, and if successful, call helper to execute command
   for (string &command : commands) {
     child = fork();
     if (child == -1) {
       perror("fork");
     }
     if (child == 0) {
-      if (commands.size() > 1) {
-        handle_client(sockfd, &src, srclen, command, true);
-      }
-      else {
-        handle_client(sockfd, &src, srclen, command, false);
-      }
+      // if fork successful, call helper function to execute the command
+      handle_client(peer_sockfd, &src, srclen, command);
       exit(0);
     }
   } 
@@ -195,14 +193,10 @@ void do_accept(int sockfd, string port, map<string,vector<string>> &config_entri
 int main(int argc, char *argv[]) {
   map<string,vector<string>> config_entries;
   vector<pair<int,string>> listeners;
-  struct sockaddr_in6 src;
-  socklen_t srclen;
-  pid_t child;
-  int peer_sockfd;
   fd_set fdset;
   int maxfd = 0;
 
-  // set up SIGCHLD handler with SA_NOCLDWAIT
+  // set up SIGCHLD handler with SA_NOCLDWAIT (ensure no zombie children)
   setup_sa_nocldwait();
 
   // ensure program is given correct number of arguments
@@ -250,6 +244,5 @@ int main(int argc, char *argv[]) {
       }
     }
   }
-
   return EXIT_SUCCESS;
 }
